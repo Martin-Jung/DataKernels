@@ -1,0 +1,196 @@
+---
+title: "Housing prices"
+output: html_notebook
+---
+
+> Ask a home buyer to describe their dream house, and they probably won't begin with the height of the basement ceiling or the proximity to an east-west railroad. But this playground competition's dataset proves that much more influences price negotiations than the number of bedrooms or a white-picket fence.
+With 79 explanatory variables describing (almost) every aspect of residential homes in Ames, Iowa, this competition challenges you to predict the final price of each home.
+
+[Source](https://www.kaggle.com/c/house-prices-advanced-regression-techniques)
+
+
+*Goal*:<br>
+Predict the sales price for each house. For each Id in the test set, you must predict the value of the SalePrice variable. 
+
+*Metric*: <br>RMSE between log(predValue) and log(observered)´´
+
+
+```{r,include=FALSE, echo=FALSE}
+library(tidyverse)
+library(mboost)
+library(mgcv)
+library(caret)
+```
+
+Myplan for this notebook is to get some reasonable performance (low overall error) applying a gadient descent boosting procedure with variable stability selection. The **mboost** function serves as workhorse and takes care of most of the variable selection for now. 
+<br>
+Okay. Lets first load the data and have a look at it:
+
+```{r}
+df.train <- read_csv("train.csv") # The training dataset
+df.test <- read_csv("test.csv") # The testing dataset
+
+str(df.train)
+# How does our response look
+hist(df.train$SalePrice) # Looks pretty approximately gamma distributed (with nui shape of 2-4ish)
+
+```
+
+Next, lets format the variables considered for the modeling process. I make a couple of assumptions about which variables i include and are relevant.
+
+```{r}
+# Preformatting of variables
+pred <- list()
+for( what in c("df.train","df.test")){
+  df = get(what)
+  
+  # I think I will try those as continous linear features
+  # * Longer street distance -> higher sale
+  # * Greater LotArea -> higher sale
+  
+  df$Street[which(is.na(df$Street))] <- "No"
+  df$Alley[which(is.na(df$Alley))] <- "No"
+  
+  # Missing values in the garage will be left missing and imputed later
+  # df$GarageYrBlt
+  # Same for lot frontage
+  #df$LotFrontage
+  
+  # The type of utilities would influence my decision of buying anything
+  # Neighboorhood could possibly be linked to a spatial structure assuming that closer neighb. have similar prices
+  
+  #df$Exterior1st[which(is.na(df$Exterior1st))] <- "No"
+  #df$Exterior2nd[which(is.na(df$Exterior2nd))] <- "No"
+  
+  # No pool?
+  df$PoolQC[which(is.na(df$PoolQC))] <- "No"
+  # No Fence?
+  df$Fence[which(is.na(df$Fence))] <- "No"
+  # Misc Features
+  df$MiscFeature[which(is.na(df$MiscFeature))] <- "No"
+  # Fireplace
+  df$FireplaceQu[which(is.na(df$FireplaceQu))] <- "No"
+  # GarageFinish
+  df$GarageType[which(is.na(df$GarageType))] <- "No"
+  df$GarageFinish[which(is.na(df$GarageFinish))] <- "No"
+  # Garage conditions
+  df$GarageQual[which(is.na(df$GarageQual))] <- "No"
+  df$GarageCond[which(is.na(df$GarageCond))] <- "No"
+  
+  df$MasVnrType[which(is.na(df$MasVnrType))]  <- "No"
+  df$MasVnrType[which(is.na(df$MasVnrType))]  <- "No"
+  df$MasVnrArea[which(is.na(df$MasVnrArea))]  <-  0 # Assuming 0 is reflectant of no areal
+  # Basement
+  df$BsmtCond[which(is.na(df$BsmtCond))] <- "No"
+  df$BsmtExposure[which(is.na(df$BsmtExposure))] <- "No"
+  df$BsmtFinType1[which(is.na(df$BsmtFinType1))] <- "No"
+  df$BsmtFinType2[which(is.na(df$BsmtFinType2))] <- "No"
+  # Electrical
+  df$Electrical[which(is.na(df$Electrical))] <- "No"
+  df$BsmtFinType2[which(is.na(df$BsmtFinType2))] <- "No"
+  
+
+df <- df %>% 
+  mutate(
+    MSSubClass = factor(MSSubClass), # Identifies the type of dwelling involved in the sale
+    MSZoning = factor(MSSubClass), # zoning classification of the sale
+    LotShape = factor(LotShape,levels = c("Reg","IR1","IR2","IR3"),ordered = T), # Ordered factor of irregularity
+    LandContour = factor(LandContour, levels = c("Lvl","Bnk","HLS","Low"),ordered = T),# Ordered factor of the property flatness
+    LandSlope = factor(LandSlope, levels = c("Gtl","Mod","Sev"),ordered = T), # "Landslope of property"
+    Utilities = factor(Utilities), # Any utilities
+    Neighborhood = factor(Neighborhood), # Good random intercept for now
+    BldgType = factor(BldgType), # What kind of building
+    HouseStyle = factor(HouseStyle), # What housestyle. Potentially nested in building type
+    Remodelled = factor(ifelse(YearBuilt==YearRemodAdd,0,1)), # Was the house remodelled ?
+    RoofStyle = factor(RoofStyle), RoofMatl = factor(RoofMatl), # How is the roof?
+    # Create a factor whether there 0,1 or 2 conditions
+    Conditions = factor( ifelse(Condition1=="Norm",0,ifelse(Condition2!="Norm",2,1)) ), # 
+    Condition1 = factor( Condition1 ),
+    Condition2 = factor( Condition2 ),
+    # Exterior
+    Exterior1st = factor( Exterior1st ),
+    Exterior2nd =  factor( Exterior2nd ),
+    # Other things
+    CentralAir = factor(CentralAir),
+    HeatingQC = factor(HeatingQC,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    Functional = factor(Functional,levels = c("Typ","Min1","Min2","Mod","Maj1","Maj2","Sev","Sal"),ordered = T),
+    PavedDrive = factor(PavedDrive),
+    KitchenQual = factor(KitchenQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    FireplaceQu = factor(FireplaceQu,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    PoolQC = factor(PoolQC,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T), # Pool good
+    GarageQual = factor(GarageQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    GarageCond = factor(GarageQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    Fence = relevel(factor(Fence),ref ="No") # Fence?
+  )
+  # Save in prediction list
+  pred[[what]] <- df
+  rm(df)
+}
+# Check missing values
+( x <- names( which( apply(pred$df.train, 2, function(x) any(is.na(x))) ) ) )
+# Looks good
+
+# Missing and numeric
+(x <- names( which( apply(pred$df.test, 2, function(x) any(is.na(x))) ) )  )
+# Here we missed some
+(y <- names( which( apply(pred$df.test, 2, function(x) any(!is.numeric(x)) ) )  ) ) # All non-numeric columns
+
+# get those missing
+pred$df.test[,y[which(y %in% x)] ] <- pred$df.test[,y[which(y %in% x)] ] %>% mutate_if(is.factor,as.character) %>%  replace(is.na(.),values =  "No")
+pred$df.test[,y[which(y %in% x)] ] <- pred$df.test[,y[which(y %in% x)] ] %>% mutate_if(is.character,as.factor) # Convert back
+
+```
+
+From here on lets build the model
+
+```{r}
+require(mboost)
+
+response = "SalePrice"
+fam = GammaReg()
+
+# Groups of variables
+# Monotonically changing variables
+var.mono <- c("OverallN","OverallP","greening","browning")
+var.con <- c("elev_avg","EVI.mean","SPEI.Z.3")
+
+
+# Asin square root transform all landscape disturbance proportions
+pred[,ls.var] <- apply(pred[,ls.var], 2, function(y) {asin(sqrt(y))} )
+
+# Mean center / scale all continious predictors
+#pred[,c(loc.var,ls.var)] <- apply(pred[,c(loc.var,ls.var)], 2, function(y) { scale(y,center = TRUE, scale = F) } )
+
+
+# Boosting control options
+bctrl = boost_control(mstop = 5000,nu = 0.001,risk = "inbag", trace = TRUE)
+# Set step-length factor  to about 0.001 for maximal robustness  
+# All base-learners were made comparable by centering predictors at the beginning and using the same degrees of freedom for all base-learners 
+
+
+
+base.local <- paste(c(paste("bbs(", loc.var, ",knots = 4, center = TRUE, df = 1)", sep = "", collapse = " + "),
+                      paste("bols(", loc.var, ",intercept = FALSE, df = 1)", sep = "", collapse = " + ")), collapse = "+")
+
+
+# Construct formulas
+f.local = as.formula( paste(response, " ~ ",base.time,"+",base.local, collapse = " + "  ) )
+
+# Start model
+mb.full <- mboost(formula = f.full, control = bctrl,data=pred, family=fam)
+
+### -- Crossvalidating with OOB all models -- ###
+# Early stopping using Cross-validation to prevent potential overfitting the model
+crossStop <- function(mb1,B=10){
+  cv10f <- cv(model.weights(mb1), type = "kfold",B=B,prob = 0.5, strata = pred[mb1$rownames,"bcr"] ) 
+  cvm <- cvrisk(mb1, folds = cv10f) # Parallel optimization
+  return(cvm)
+}
+# Crossvalidate
+cvm.local <- crossStop(mb.local)
+mb.local[mstop(cvm.local)] # Set the max number of boosting iterations
+
+
+
+```
+
