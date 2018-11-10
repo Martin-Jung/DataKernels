@@ -26,24 +26,17 @@ Myplan for this notebook is to get some reasonable performance (low overall erro
 <br>
 Okay. Lets first load the data and have a look at it:
 
-```{r}
-df.train <- read_csv("train.csv") # The training dataset
-df.test <- read_csv("test.csv") # The testing dataset
-
-str(df.train)
-# How does our response look
-hist(df.train$SalePrice) # Looks pretty approximately gamma distributed (with nui shape of 2-4ish)
+```{r include=FALSE}
+df.train <- read_csv("train.csv") %>% mutate(data = "train") # The training dataset
+df.test <- read_csv("test.csv") %>% mutate(data = "test",SalePrice = NA) # The testing dataset
+df <- bind_rows(df.train,df.test)
 
 ```
 
 Next, lets format the variables considered for the modeling process. I make a couple of assumptions about which variables i include and are relevant.
 
-```{r}
+```{r Precprocessing}
 # Preformatting of variables
-pred <- list()
-for( what in c("df.train","df.test")){
-  df = get(what)
-  
   # I think I will try those as continous linear features
   # * Longer street distance -> higher sale
   # * Greater LotArea -> higher sale
@@ -82,7 +75,7 @@ for( what in c("df.train","df.test")){
   df$MasVnrArea[which(is.na(df$MasVnrArea))]  <-  0 # Assuming 0 is reflectant of no areal
   # Basement
   df$BsmtCond[which(is.na(df$BsmtCond))] <- "No"
-  df$BsmtExposure[which(is.na(df$BsmtExposure))] <- "No"
+  df$BsmtExposure[which(is.na(df$BsmtExposure))] <- "None"
   df$BsmtFinType1[which(is.na(df$BsmtFinType1))] <- "No"
   df$BsmtFinType2[which(is.na(df$BsmtFinType2))] <- "No"
   # Electrical
@@ -113,71 +106,109 @@ df <- df %>%
     # Other things
     CentralAir = factor(CentralAir),
     HeatingQC = factor(HeatingQC,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
-    Functional = factor(Functional,levels = c("Typ","Min1","Min2","Mod","Maj1","Maj2","Sev","Sal"),ordered = T),
+    Functional = factor(Functional,levels = rev(c("Typ","Min1","Min2","Mod","Maj1","Maj2","Sev","Sal")),ordered = T),
     PavedDrive = factor(PavedDrive),
     KitchenQual = factor(KitchenQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
     FireplaceQu = factor(FireplaceQu,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
     PoolQC = factor(PoolQC,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T), # Pool good
     GarageQual = factor(GarageQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
     GarageCond = factor(GarageQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    GarageFinish = factor(GarageFinish,levels = c("No","Unf","RFn","Fin")),
+    ExterQual = factor(ExterQual,levels = c("Po","Fa","TA","Gd","Ex"),ordered = T),
+    ExterCond = factor(ExterCond,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    BsmtQual = factor(BsmtQual,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    BsmtCond = factor(BsmtCond,levels = c("No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    BsmtExposure = factor(BsmtExposure, levels = c("None","No","Po","Fa","TA","Gd","Ex"),ordered = T),
+    BsmtFinType1 = factor(BsmtFinType1, levels = c("No","Unf","LwQ","Rec","BLQ","ALQ","GLQ" )),
+    BsmtFinType2 = factor(BsmtFinType2, levels = c("No","Unf","LwQ","Rec","BLQ","ALQ","GLQ" )),
+    
     Fence = relevel(factor(Fence),ref ="No") # Fence?
   )
-  # Save in prediction list
-  pred[[what]] <- df
-  rm(df)
-}
-# Check missing values
-( x <- names( which( apply(pred$df.train, 2, function(x) any(is.na(x))) ) ) )
-# Looks good
 
-# Missing and numeric
-(x <- names( which( apply(pred$df.test, 2, function(x) any(is.na(x))) ) )  )
+# Check missing values
+( x <- names( which( apply(df, 2, function(x) any(is.na(x))) ) ) )
 # Here we missed some
-(y <- names( which( apply(pred$df.test, 2, function(x) any(!is.numeric(x)) ) )  ) ) # All non-numeric columns
+(y <- names( which( apply(df, 2, function(x) any(!is.numeric(x)) ) )  ) ) # All non-numeric columns
 
 # get those missing
-pred$df.test[,y[which(y %in% x)] ] <- pred$df.test[,y[which(y %in% x)] ] %>% mutate_if(is.factor,as.character) %>%  replace(is.na(.),values =  "No")
-pred$df.test[,y[which(y %in% x)] ] <- pred$df.test[,y[which(y %in% x)] ] %>% mutate_if(is.character,as.factor) # Convert back
+df[,y[which(y %in% x)] ] <- df[,y[which(y %in% x)] ] %>% mutate_if(is.factor,as.character) %>%  replace(is.na(.),values =  "No")
+df[,y[which(y %in% x)] ] <- df[,y[which(y %in% x)] ] %>% mutate_if(is.character,as.factor) # Convert back
 
+# Did not work for those. Correct manually
+df$GarageYrBlt <- as.numeric(as.character(df$GarageYrBlt))
+df$LotFrontage <- as.numeric(as.character(df$LotFrontage))
+df$BsmtFinSF1 <- as.numeric(as.character(df$BsmtFinSF1))
+df$BsmtFinSF2 <- as.numeric(as.character(df$BsmtFinSF2))
+df$BsmtUnfSF <- as.numeric(as.character(df$BsmtUnfSF))
+df$GarageCars <- as.numeric(as.character(df$GarageCars))
+df$GarageArea <- as.numeric(as.character(df$GarageArea))
+df$TotalBsmtSF <- as.numeric(as.character(df$TotalBsmtSF))
+
+df$SaleCondition <- factor(df$SaleCondition)
+df$SaleCondition <- factor(df$SaleCondition)
+
+# Rename first and second floor
+df <- df %>% rename("firstFloor" = `1stFlrSF`,"secondFloor" = `2ndFlrSF`,"thirdPorch" = `3SsnPorch` )
 ```
 
+# Model!
 From here on lets build the model
 
-```{r}
+```{r Model}
 require(mboost)
 
+# General
 response = "SalePrice"
-fam = GammaReg()
+fam = Gaussian()
 
-# Groups of variables
-# Monotonically changing variables
-var.mono <- c("OverallN","OverallP","greening","browning")
-var.con <- c("elev_avg","EVI.mean","SPEI.Z.3")
+# Groups of variables 
+var.linear <- c("Utilities","LotConfig","LandSlope","OverallQual","OverallCond","Conditions","Remodelled","MasVnrType","Foundation",
+                "CentralAir","BsmtFullBath","BsmtHalfBath","FullBath","HalfBath","Bedroom","Kitchen","TotRmsAbvGrd","Fireplaces",
+                "GarageType","GarageFinish","PavedDrive","BsmtFinType1","BsmtFinType2","Fence")
+var.mono.dec <- c("LandContour","LotShape","Functional")
+var.mono.inc <- c("ExterCond","ExterQual","BsmtQual","BsmtCond","BsmtExposure","HeatingQC","KitchenQual",
+                  "FireplaceQu","GarageQual","GarageCond","PoolQC")
+var.smooth <- c("LotFrontage","LotArea","YearBuilt","MasVnrArea","BsmtFinSF1","BsmtFinSF2","BsmtUnfSF","TotalBsmtSF","firstFloor","secondFloor","LowQualFinSF","GrLivArea","GarageYrBlt","GarageCars","GarageArea","WoodDeckSF","OpenPorchSF","EnclosedPorch","thirdPorch","ScreenPorch",
+                "PoolArea","MiscVal","YrSold")
+var.tree <- c("Street","Alley","Condition1","Condition2","BldgType","HouseStyle","RoofStyle","RoofMatl","Exterior1st","Exterior2nd","Heating","Electrical","MiscFeature","SaleType")
+var.random <- c("MSZoning","SaleCondition","Neighborhood","MSSubClass") # To accompany for spatial and type structure
 
-
-# Asin square root transform all landscape disturbance proportions
-pred[,ls.var] <- apply(pred[,ls.var], 2, function(y) {asin(sqrt(y))} )
+# Log-transform the response
+pred$df.train[,response] <- log(pred$df.train[,response])
 
 # Mean center / scale all continious predictors
-#pred[,c(loc.var,ls.var)] <- apply(pred[,c(loc.var,ls.var)], 2, function(y) { scale(y,center = TRUE, scale = F) } )
-
+pred$df.train[,c(var.smooth)] <- apply( pred$df.train[,c(var.smooth)], 2, function(y) { scale(y,center = TRUE, scale = F) } )
+pred$df.test[,c(var.smooth)] <- apply( pred$df.test[,c(var.smooth)], 2, function(y) { scale(y,center = TRUE, scale = F) } )
 
 # Boosting control options
 bctrl = boost_control(mstop = 5000,nu = 0.001,risk = "inbag", trace = TRUE)
 # Set step-length factor  to about 0.001 for maximal robustness  
 # All base-learners were made comparable by centering predictors at the beginning and using the same degrees of freedom for all base-learners 
 
-
-
-base.local <- paste(c(paste("bbs(", loc.var, ",knots = 4, center = TRUE, df = 1)", sep = "", collapse = " + "),
-                      paste("bols(", loc.var, ",intercept = FALSE, df = 1)", sep = "", collapse = " + ")), collapse = "+")
-
+## Define the base learners ##
+base.linear <- paste("bols(", var.linear, ",intercept = FALSE, df = 1)", sep = "", collapse = " + ")
+base.smooth <- paste("bbs(", var.smooth, ",knots =4, center = TRUE, df = 1)", sep = "", collapse = " + ")
+base.mono.dec <- paste("bmono(", var.mono.dec, ",constraint = \"decreasing\", df = 1)", sep = "", collapse = " + ")
+base.mono.inc <- paste("bmono(", var.mono.inc, ",constraint = \"decreasing\", df = 1)", sep = "", collapse = " + ")
+base.tree <- paste("btree(", var.tree, ")", sep = "", collapse = " + ")
+base.random <- paste("brandom(", c(var.random), ")", sep = "", collapse = " + ")
 
 # Construct formulas
-f.local = as.formula( paste(response, " ~ ",base.time,"+",base.local, collapse = " + "  ) )
+f = as.formula( paste(response, " ~ ",
+                      #base.linear, "+",
+                      base.smooth, "+",
+                      base.mono.dec, "+",
+                      base.mono.inc, "+",
+                      base.tree, "+",
+                      base.random, collapse = " + "  ) )
 
 # Start model
-mb.full <- mboost(formula = f.full, control = bctrl,data=pred, family=fam)
+mb.full <- mboost(formula = f, control = bctrl,data=pred$df.train, family=fam)
+
+# Get a first prediction
+val <- exp( mboost::predict.mboost(mb.full,newdata = pred$df.test,type = "response") )
+
+write.csv(data.frame(Id = pred$df.test$Id, val),"predictions1.csv",header=TRUE)
 
 ### -- Crossvalidating with OOB all models -- ###
 # Early stopping using Cross-validation to prevent potential overfitting the model
